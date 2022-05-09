@@ -1,0 +1,1672 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# # CIBC Fractional Logit LGD models testing and analysis for Bank USA :
+# 
+
+# 
+
+# In[3]:
+
+
+
+import sys
+sys.path.insert(1,  r'C:/Users/KGhatak/Desktop/LGD_Model_Independent_REplication')
+
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from statsmodels.genmod.generalized_linear_model import GLM
+from statsmodels.genmod import families
+from statsmodels.tools.eval_measures import rmse
+import yaml
+from tqdm import tqdm
+import warnings
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+import pickle
+import AA_Func_Def as fd
+
+warnings.filterwarnings("ignore") 
+
+
+# In[4]:
+
+
+with open(r'C:\Users\KGhatak\Desktop\LGD_Model_Independent_REplication\config_win.yaml') as config_file:
+    config = yaml.load(config_file, Loader=yaml.FullLoader)
+
+
+# ## Section 1 : Independent replication : (2.8 ,3.1 and 7.1 of CIBC Detailed Status)
+
+# ### Note : 
+# We have recieved a client LGD modelling data under pkl format named as 'LGD_Model_Data.pkl'. We directly converted this to a csv file using the procedures of spyder8 as discussed earlier in one of our internal calls and then using that csv as the modelling base data we performed all the replication, checks and tests.
+# 
+# Earlier we were following the data creation process and through that data creation our final pkl data was getting generated and then we were converting that pkl to csv. May be some data got changed or augmented in the process in between and that was resulting in the mismatch of the model specification for the C&I Secured model.
+
+# In[3]:
+
+
+#%% LGD model development data (Resad the client datab directly by converting the pkl into csv as )
+
+# mod_data = pd.read_pickle(config['historical_data'] + 'LGD_Model_Data.pkl')
+
+##using csv file from original client provided file with 134 kb:
+mod_data =pd. read_csv("C:/Users/KGhatak/Desktop/LGD_Model_Independent_REplication/LGD_Model_Data.csv")
+
+df_ci_sec=mod_data[mod_data['seg']=='COMM|C.I|SEC.']
+df_cre_perm=mod_data[mod_data['seg']=='COMM|CRE|PERM.']
+df_res_lien1st=mod_data[mod_data['seg']=='CONS|HE.RES|1ST.']
+
+
+# ### 1.1 Independent replication for CI_Sec with fwd_smooth LGD : 
+
+# In[4]:
+
+
+## model replication for CRE_Perm:
+
+model_data=df_ci_sec.copy()
+dep_var='lgd_wavg_smth_fwd'
+
+if dep_var == 'lgd_wavg_smth_fwd':
+    model_data = model_data[model_data['def_yyyyqq'] <= 201812]
+
+from sklearn.metrics import mean_squared_error
+
+var_list = [i for i in model_data.columns]
+
+# only keep the MEVs
+del var_list[0:10]
+
+
+mod_num = 0
+
+passed_models = pd.DataFrame()
+
+mod = {}
+
+
+
+for i in range(len(var_list)):
+    
+    for j in range(i+1, len(var_list)):
+
+        mod_num=mod_num+1
+
+        if var_list[i][:-5] != var_list[j][:-5]:
+                                  
+            y = model_data[[dep_var]].values 
+            X = model_data[[var_list[i], var_list[j]]].values
+            X = sm.add_constant(X)
+            
+            model_fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+            
+                
+            y_pred = np.reshape(model_fit.predict(X), (-1, 1))
+
+        
+            err=mean_squared_error(y,y_pred,squared=False)
+            
+            vif = [variance_inflation_factor(X, k) for k in range(X.shape[1])] 
+            
+            
+            result_df = pd.DataFrame([model_fit.params, model_fit.pvalues, vif, np.array([model_fit.aic, model_fit.aic, model_fit.aic]), np.array([err, err, err])], columns = ['_const', var_list[i], var_list[j]])
+
+            
+            result_df['stats'] = ['params', 'pvalues', 'vif', 'aic', 'rmse']
+            
+            result_df_pivot = pd.pivot_table(result_df, columns = 'stats').reset_index()
+
+            result_df_pivot['model_num'] = mod_num
+
+
+            
+                        
+            result_df_pivot.loc[(result_df_pivot['index'] == '_const') & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('gdp')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('ur')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('vix')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('dpi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('dsr')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('crepi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('mtg')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('hs_st')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('hpi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('snp')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('ip')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('nh_sl')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('wti')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('baa')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            
+            result_df_pivot['vif_passed']=result_df_pivot[result_df_pivot['index']!='_const']['vif']<=4
+            
+            
+            check_sum=result_df_pivot['select'].sum()
+            
+            if check_sum==3 :
+                passed_models = pd.concat([passed_models, result_df_pivot], axis = 0)
+                
+                
+passed_vif_mod_list=passed_models[passed_models['vif_passed']==True]['model_num'].tolist()
+            
+passed_models_final=passed_models[passed_models.model_num.isin(passed_vif_mod_list)]
+
+
+# In[5]:
+
+
+top_10models=passed_models_final.sort_values(by='rmse',ascending=True)
+top_10models['model_sequence']=top_10models['model_num'].factorize()[0]+1
+
+top_10models.head(5)
+
+
+# In[6]:
+
+
+top_10models[top_10models['model_sequence']==4]
+
+
+# ### Conclusion : 
+# The model under consideration comes at 4th position if we sort by RMSE on the training data set and that matches with client's result too. But the model number doesn't match with the one client has shared in their code (626). Our final model is coming wiht a model number 694 here. May be that's system specific and nothing to worry much about and we can discuss this with the modellers laters on.
+
+# ### 1.2 Independent replication for CRE_Perm with fwd_smooth LGD : 
+
+# In[7]:
+
+
+## model replication for CRE_Perm with VIF checking:
+
+model_data=df_cre_perm.copy()
+dep_var='lgd_wavg_smth_fwd'
+
+if dep_var == 'lgd_wavg_smth_fwd':
+    model_data = model_data[model_data['def_yyyyqq'] <= 201812]
+
+from sklearn.metrics import mean_squared_error
+
+var_list = [i for i in model_data.columns]
+
+# only keep the MEVs
+del var_list[0:10]
+
+
+mod_num = 0
+
+passed_models = pd.DataFrame()
+
+mod = {}
+
+
+
+for i in range(len(var_list)):
+    
+    for j in range(i+1, len(var_list)):
+
+        mod_num=mod_num+1
+
+        if var_list[i][:-5] != var_list[j][:-5]:
+                                  
+            y = model_data[[dep_var]].values 
+            X = model_data[[var_list[i], var_list[j]]].values
+            X = sm.add_constant(X)
+            
+            model_fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+            
+                
+            y_pred = np.reshape(model_fit.predict(X), (-1, 1))
+
+        
+            err=mean_squared_error(y,y_pred,squared=False)
+            
+            vif = [variance_inflation_factor(X, k) for k in range(X.shape[1])] 
+            
+            
+            result_df = pd.DataFrame([model_fit.params, model_fit.pvalues, vif, np.array([model_fit.aic, model_fit.aic, model_fit.aic]), np.array([err, err, err])], columns = ['_const', var_list[i], var_list[j]])
+
+            
+            result_df['stats'] = ['params', 'pvalues', 'vif', 'aic', 'rmse']
+            
+            result_df_pivot = pd.pivot_table(result_df, columns = 'stats').reset_index()
+
+            result_df_pivot['model_num'] = mod_num
+
+            
+                        
+            result_df_pivot.loc[(result_df_pivot['index'] == '_const') & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('gdp')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('ur')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('vix')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('dpi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('dsr')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('crepi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('mtg')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('hs_st')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('hpi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('snp')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('ip')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('nh_sl')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('wti')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('baa')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            
+            result_df_pivot['vif_passed']=result_df_pivot[result_df_pivot['index']!='_const']['vif']<=4
+            
+            
+            check_sum=result_df_pivot['select'].sum()
+            
+            if check_sum==3 :
+                passed_models = pd.concat([passed_models, result_df_pivot], axis = 0)
+                
+                
+passed_vif_mod_list=passed_models[passed_models['vif_passed']==True]['model_num'].tolist()
+            
+passed_models_final=passed_models[passed_models.model_num.isin(passed_vif_mod_list)]
+                
+
+
+# In[8]:
+
+
+top_10models=passed_models_final.sort_values(by='rmse',ascending=True)
+top_10models['model_sequence']=top_10models['model_num'].factorize()[0]+1
+
+top_10models.head(5)
+
+
+# In[9]:
+
+
+top_10models[top_10models['model_sequence']==11]
+
+
+# ### Conclusion : 
+# The coefficients matched with the final champion model.The final chanmpion model under consideration comes at 11th position if we sort by RMSE on the training data set and that matches with client's result too. But the model number doesn't match with the one client has shared in their code (968). Our final model is coming wiht a model number 1036 here. May be that's system specific and nothing to worry much about and we can discuss this with the modellers laters on.
+
+# In[ ]:
+
+
+
+
+
+# ### 1.3 Independent replication for Res 1st Lien with fwd smooth LGD : 
+
+# In[10]:
+
+
+## model replication for Res_1st_Lien fwd smoothed LGD:
+
+model_data=df_res_lien1st.copy()
+dep_var='lgd_wavg_smth_fwd'
+
+if dep_var == 'lgd_wavg_smth_fwd':
+    model_data = model_data[model_data['def_yyyyqq'] <= 201812]
+
+from sklearn.metrics import mean_squared_error
+
+var_list = [i for i in model_data.columns]
+
+# only keep the MEVs
+del var_list[0:10]
+
+
+mod_num = 0
+
+passed_models = pd.DataFrame()
+
+mod = {}
+
+
+
+for i in range(len(var_list)):
+    
+    for j in range(i+1, len(var_list)):
+
+        mod_num=mod_num+1
+
+        if var_list[i][:-5] != var_list[j][:-5]:
+                                  
+            y = model_data[[dep_var]].values 
+            X = model_data[[var_list[i], var_list[j]]].values
+            X = sm.add_constant(X)
+            
+            model_fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+            
+                
+            y_pred = np.reshape(model_fit.predict(X), (-1, 1))
+
+        
+            err=mean_squared_error(y,y_pred,squared=False)
+            
+            vif = [variance_inflation_factor(X, k) for k in range(X.shape[1])] 
+            
+            
+            result_df = pd.DataFrame([model_fit.params, model_fit.pvalues, vif, np.array([model_fit.aic, model_fit.aic, model_fit.aic]), np.array([err, err, err])], columns = ['_const', var_list[i], var_list[j]])
+
+            
+            result_df['stats'] = ['params', 'pvalues', 'vif', 'aic', 'rmse']
+            
+            result_df_pivot = pd.pivot_table(result_df, columns = 'stats').reset_index()
+
+            result_df_pivot['model_num'] = mod_num
+
+            
+                        
+            result_df_pivot.loc[(result_df_pivot['index'] == '_const') & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('gdp')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('ur')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('vix')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('dpi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('dsr')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('crepi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('mtg')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('hs_st')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('hpi')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('snp')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('ip')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('nh_sl')) & (result_df_pivot['params'] < 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('wti')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            result_df_pivot.loc[(result_df_pivot['index'].str.contains('baa')) & (result_df_pivot['params'] > 0) & (result_df_pivot['pvalues'] <= 0.1), 'select'] = 1
+            
+            result_df_pivot['vif_passed']=result_df_pivot[result_df_pivot['index']!='_const']['vif']<=4
+            
+            
+            check_sum=result_df_pivot['select'].sum()
+            
+            if check_sum==3 :
+                passed_models = pd.concat([passed_models, result_df_pivot], axis = 0)
+                
+                
+passed_vif_mod_list=passed_models[passed_models['vif_passed']==True]['model_num'].tolist()
+            
+passed_models_final=passed_models[passed_models.model_num.isin(passed_vif_mod_list)]
+                
+
+
+# In[11]:
+
+
+top_10models=passed_models_final.sort_values(by='rmse',ascending=True)
+top_10models['model_sequence']=top_10models['model_num'].factorize()[0]+1
+
+top_10models.head(5)
+
+
+# In[12]:
+
+
+top_10models[top_10models['model_sequence']==15]
+
+
+# ### Conclusion : 
+# 
+# The model selection and coefficient values matched. The final chanmpion model under consideration comes at 15th position if we sort by RMSE on the training data set and that matches with client's result too. But the model number doesn't match with the one client has shared in their code (299). Our final model is coming wiht a model number 367 here. May be that's system specific and nothing to worry much about and we can discuss this with the modellers laters on.
+
+# In[ ]:
+
+
+
+
+
+# ## Section 2 : Backtesting (4.2 of CIBC Detailed Status)
+
+# We have developped the model wise back testing results in this section. As disucssed , we have now taken last 8 qtrs of data for the out of time testing. 
+
+# In[68]:
+
+
+#%% LGD model development data
+
+# mod_data = pd.read_pickle(config['historical_data'] + 'LGD_Model_Data.pkl')
+
+##using csv file from original client provided file with 134 kb:
+mod_data =pd. read_csv("C:/Users/KGhatak/Desktop/LGD_Model_Independent_REplication/LGD_Model_Data.csv")
+
+
+df_ci_sec=mod_data[mod_data['seg']=='COMM|C.I|SEC.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','ip_lag0', 'nh_sl_lag0']]
+df_cre_perm=mod_data[mod_data['seg']=='COMM|CRE|PERM.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','baa_spr_lag0', 'crepi_lag3']]
+df_res_lien1st=mod_data[mod_data['seg']=='CONS|HE.RES|1ST.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','dpi_lag0', 'hpi_lag3']]
+
+
+# ### 2.1 : Backtesting data set creation:
+
+# In[80]:
+
+
+## This block of code develops the model wise back testing results and stack one below the other in the form of a data frame:
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+oot_is_bt_df=pd.DataFrame()
+
+bt_perf_summary=pd.DataFrame()
+
+for i in range(len(df_list)):
+    
+    model_data=df_list[i]
+    
+    dep_var='lgd_wavg_smth_fwd'
+    
+    if dep_var == 'lgd_wavg_smth_fwd':
+        model_data = model_data[model_data['def_yyyyqq'] <= 201812]
+    
+    ##Fit the final model
+    y = model_data.iloc[:,2].values
+    X = model_data.iloc[:,3:5].values
+    X = sm.add_constant(X)
+    
+    fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+    
+    y_pred_full = np.reshape(fit.predict(X), (-1, 1))
+    err_full=mean_squared_error(y,y_pred_full,squared=False)
+    
+     ##Insample new model :
+    y_is = model_data.iloc[:-8, 2].values 
+    X_is = model_data.iloc[:-8, 3:5].values
+    X_is = sm.add_constant(X_is)
+    
+    fit_is = GLM(y_is, X_is, family=families.Binomial()).fit(cov_type='HC0')
+    
+    y_pred_is = np.reshape(fit.predict(X_is), (-1, 1))
+    err_is=mean_squared_error(y_is,y_pred_is,squared=False)
+    
+    ##Outsample Prediction :
+    y_os = model_data.iloc[-8:, 2].values 
+    X_os = model_data.iloc[-8:, 3:5].values
+    X_os = sm.add_constant(X_os)
+           
+    y_pred_os = np.reshape(fit_is.predict(X_os), (-1, 1))
+    err_os=mean_squared_error(y_os,y_pred_os,squared=False)
+    
+    bt_df = model_data[['as_of_yyyymm','def_yyyyqq', dep_var]].copy()
+    bt_df['model_name'] = seg_name[i]
+    bt_df['pred_full'] = list(y_pred_full.reshape(-1,))
+    bt_df['pred_is'] = list(y_pred_is.reshape(-1,))+[np.nan]*8
+    bt_df['pred_os'] = [np.nan]*(len(bt_df) - 8) + list(y_pred_os.reshape(-1,))
+    
+
+    
+    bt_summary = [{'model_name': seg_name[i], 'RMSE_Full': err_full, 'RMSE_is':err_is,'RMSE_os':err_os}]
+    
+    bt_summary_df=pd.DataFrame(bt_summary)
+    
+    
+    oot_is_bt_df = pd.concat([oot_is_bt_df, bt_df], axis = 0)
+    
+    bt_perf_summary= pd.concat([bt_perf_summary, bt_summary_df], axis = 0)
+                
+
+
+# In[82]:
+
+
+bt_perf_summary
+
+
+# In[15]:
+
+
+oot_is_bt_df.head()
+
+
+# ### 2.2 Backtesting plot generation : 
+
+# In[16]:
+
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+
+
+for i in range(len(seg_name)):
+
+    plt_data=oot_is_bt_df[oot_is_bt_df['model_name']==seg_name[i]]
+    x_ticks = plt_data['def_yyyyqq'].unique().tolist()
+    x_ticks = x_ticks[0::1]
+
+    x = np.arange(len(plt_data))
+
+    y1 = plt_data['lgd_wavg_smth_fwd']
+    y2 = plt_data['pred_full']
+    y3 = plt_data['pred_os']
+
+    plt.figure(figsize = (20,10))
+
+    plt.xticks(np.arange(0, len(plt_data), 1), x_ticks, rotation = 45, fontsize = 15)
+    plt.yticks(fontsize=15)
+    plt.xticks()
+    plt.plot(x, y1, label = 'Act')
+    plt.plot(x, y2, label = 'Pred')
+    plt.plot(x, y3, label = 'Pred_os')
+
+    plt.legend(loc = 'best',fontsize=15)
+    plt.title("BT Plots for : "+ seg_name[i],fontsize=25)
+    
+
+
+# ## Section 3 : statistical testing : 
+
+# In[3]:
+
+
+#%% LGD model development data
+
+# mod_data = pd.read_pickle(config['historical_data'] + 'LGD_Model_Data.pkl')
+
+##using csv file from original client provided file with 134 kb:
+mod_data =pd. read_csv("C:/Users/KGhatak/Desktop/LGD_Model_Independent_REplication/LGD_Model_Data.csv")
+
+
+
+df_ci_sec=mod_data[(mod_data['seg']=='COMM|C.I|SEC.') & (mod_data['def_yyyyqq'] <= 201812)] [['lgd_wavg_smth_fwd','ip_lag0', 'nh_sl_lag0']]
+df_cre_perm=mod_data[(mod_data['seg']=='COMM|CRE|PERM.') & (mod_data['def_yyyyqq'] <= 201812)] [['lgd_wavg_smth_fwd','baa_spr_lag0', 'crepi_lag3']]
+df_res_lien1st=mod_data[(mod_data['seg']=='CONS|HE.RES|1ST.') & (mod_data['def_yyyyqq'] <= 201812)] [['lgd_wavg_smth_fwd','dpi_lag0', 'hpi_lag3']]
+
+
+# # 3.1 Model data testing :
+
+# ### 3.1.1 Outlier Testing and analysis  using box plot (3.2 from CIBC Detailed Status): 
+
+# In[4]:
+
+
+# Final model wise boxplots : 
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+import seaborn as sns
+sns.set_style("whitegrid")
+  
+
+for i in range(len(df_list)):
+    plt.figure(figsize = (15,10))
+    sns.boxplot(data = df_list[i]).set(title=seg_name[i])
+    
+
+
+# #### testing dp_lag0 variable :
+
+# In[6]:
+
+
+df_res_lien1st_test=mod_data[(mod_data['seg']=='CONS|HE.RES|1ST.') & (mod_data['def_yyyyqq'] <= 201812)] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','dpi_lag0']]
+
+
+
+
+x_ticks = df_res_lien1st_test['as_of_yyyymm'].unique().tolist()
+x_ticks = x_ticks[0::1]
+
+x = np.arange(len(df_res_lien1st_test))
+
+y1 = df_res_lien1st_test['lgd_wavg_smth_fwd']
+y2 = df_res_lien1st_test['dpi_lag0']
+
+
+plt.figure(figsize = (20,10))
+
+plt.xticks(np.arange(0, len(df_res_lien1st_test), 1), x_ticks, rotation = 45, fontsize = 15)
+plt.yticks(fontsize=15)
+plt.xticks()
+plt.plot(x, y1, label = 'LGD')
+plt.plot(x, y2, label = 'dpi_lag0')
+
+
+plt.legend(loc = 'best',fontsize=15)
+plt.title("plots dpi_lag0 variable for res_1st_lien model",fontsize=25)
+
+
+# ### 3.1.2 Stationarity Testing (3.2 from CIBC Detailed Status) : 
+
+# ### Notes on ADF Testing: 
+# 
+# Augmented Dickey Fuller test (ADF Test) is a common statistical test used to test whether a given Time series is stationary or not. It is one of the most commonly used statistical test when it comes to analyzing the stationary of a series.
+# 
+# It is from the test statistic and the p-value, you can make an inference as to whether a given series is stationary or not.
+# 
+# Null : Series is non-stationary & 
+# Alternate : Series is stationary 
+# 
+# If the p-value is obtained is greater than significance level of 0.05 and the ADF statistic is higher than any of the critical values. Clearly, there is no reason to reject the null hypothesis. So, the time series is in fact non-stationary.
+# 
+# Alternatively , if the p-value is less than the significance level of 0.05 we can reject the null hypothesis and take that the series is stationary.
+
+# In[40]:
+
+
+
+##Define function that calculates the ADF : 
+
+from statsmodels.tsa.stattools import adfuller
+
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+
+def adfuller_test(series, signif=0.05):
+    
+
+    x = adfuller(series, autolag='AIC')
+
+#using dictionary saves different data types (float, int, boolean)
+    output = {'Test Statistic': x[0], 
+          'P-value': x[1], 
+          'Number of lags': x[2], 
+          'Number of observations': x[3],
+          f'Reject (signif. level {signif})': x[1] < signif,
+          'Stationary ? ': x[1] < signif}
+        
+
+    for key, val in x[4].items():
+         output[f'Critical value {key}'] = val
+
+    return pd.Series(output)
+
+
+
+# In[41]:
+
+
+
+## Apply the ADF function on all data sets for all the variables :
+for i in range(len(df_list)):
+    print('ADF Test output for %s :' %seg_name[i])
+#     print("\n")
+    display(df_list[i].apply(lambda x: adfuller_test(x), axis=0))
+    print(2*"\n")
+
+
+# ## 3.2 Model assumptions testing : 
+
+# ### 3.2.1 Test of multicolinearity  (3.2 from CIBC Detailed Status) : 
+
+# In[42]:
+
+
+df_ci_sec_cor=df_ci_sec.drop(df_ci_sec.columns[0],axis=1)
+df_cre_perm_cor=df_cre_perm.drop(df_cre_perm.columns[0],axis=1)
+df_res_lien1st_cor=df_res_lien1st.drop(df_res_lien1st.columns[0],axis=1)
+
+df_cor_list=[df_ci_sec_cor,df_cre_perm_cor,df_res_lien1st_cor]
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+
+
+
+# In[43]:
+
+
+
+for i in range(len(df_cor_list)):
+    print('Corelation analysis output for %s :' %seg_name[i])
+
+    display(df_cor_list[i].corr())
+    print(2*"\n")
+
+
+# ### 3.2.2 Bresush Pegan Test for heterksedasticity :
+
+# In[44]:
+
+
+import statsmodels.formula.api as smf
+from statsmodels.compat import lzip
+import statsmodels.stats.api as sms
+
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+
+for i in range(len(df_list)):
+    
+    ##Fit the final model
+    y = df_list[i].iloc[:,0].values
+    X = df_list[i].iloc[:,1:3].values
+    X = sm.add_constant(X)
+    fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+    print (seg_name[i])
+    print ("\n")
+    print (fit.summary())
+    y_pred = np.reshape(fit.predict(X), (-1, 1))
+    err = fit.resid_response
+    print ("\n")
+    #perform Bresuch-Pagan test
+    names = ['Lagrange multiplier statistic', 'p-value',
+        'f-value', 'f p-value']
+    test = sms.het_breuschpagan(err, fit.model.exog)
+    print(lzip(names, test))
+    print (2*"\n")
+
+
+# ### 3.2.3 Durbin Watson Test for residual autocorelation : (3.2 from CIBC Detailed Status)
+
+# The Durbin Watson test has values between 0 and 4. Below is the table containing values and their interpretations:
+# 
+# 2: No autocorrelation. Generally, we assume 1.5 to 2.5 as no correlation.
+# 0 - <2: positive autocorrelation. The more close it to 0, the more signs of positive autocorrelation.
+# Greater than 2 -4: negative autocorrelation. The more close it to 4, the more signs of negative autocorrelation.
+
+# In[45]:
+
+
+from statsmodels.stats.stattools import durbin_watson
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from statsmodels.graphics.tsaplots import plot_acf , plot_pacf
+
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+
+for i in range(len(df_list)):
+    
+    ##Fit the final model
+    y = df_list[i].iloc[:,0].values
+    X = df_list[i].iloc[:,1:3].values
+    X = sm.add_constant(X)
+    fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+    print (seg_name[i])
+    print ("\n")
+    print (fit.summary())
+    y_pred = np.reshape(fit.predict(X), (-1, 1))
+    print ("\n")
+ 
+    #perform Durbin-Watson test
+    print("durbin watson for model "+seg_name[i] + "is %d :" % durbin_watson(fit.resid_response))
+    print (2*"\n")
+
+
+# ### What is ACF plot ?
+# 
+# A time series is a sequence of measurements of the same variable(s) made over time. Usually, the measurements are made at evenly spaced times — for example, monthly or yearly. The coefficient of correlation between two values in a time series is called the autocorrelation function (ACF). 
+# 
+# In other words,
+# 1. Autocorrelation represents the degree of similarity between a given time series and a lagged version of itself over successive time intervals.
+# 2. Autocorrelation measures the relationship between a variable’s current value and its past values.
+# 3. An autocorrelation of +1 represents a perfect positive correlation, while an autocorrelation of negative 1 represents a perfect negative correlation.
+
+# In[46]:
+
+
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+
+for i in range(len(df_list)):
+    print("ACF-PACF Plots for  "+seg_name[i])
+        
+    print ("\n")
+
+    # Plot the autocorrelation for the data with 0.05 significance level
+    plot_acf(df_list[i].iloc[:,0].values, alpha =0.05)
+    plt.show()
+
+
+
+    print(2*"\n")
+
+
+# ### Conclusion on Autocorelation :
+# 
+
+# In[ ]:
+
+
+
+
+
+# ## Section 4 : Stability Analysis (forward and backward) 
+
+# To test the stability of coefficients over time, our testing procedure re-estimates the model with a sequence of time-varying sub-samples of the development dataset. We then evaluate the model stability by inspecting charts of the coefficients estimations and the p-values over time.
+# 
+# 
+# 
+# ***Testing Procedure***
+# 
+# 
+# 
+# To evaluate overall robustness / stability of estimated relationships over time, re-estimate the model on a sequence of time-varying sub-samples of the development dataset. Specifically, the sub-samples are created in two ways:
+# - Forward stability analysis: Starting with the first 10 quarters (30 months) of the development sample and adding 1 subsequent incremental quarter (month) to each successive model re-estimation.
+# - Reverse stability analysis: Starting with the last 10 quarters (30 months) of the development sample and adding 1 prior incremental quarter (month) in each successive model re-estimation.
+# 
+# 
+# 
+# In the examination of charts of the regression coefficients and p-values, search for the following indicators of unstable relationship:
+# - Significant magnitude changes and/or large volatility in the regression coefficients which indicate instability in the modeled relationship.
+# - P-values less than 0.05 which indicate non-significant regression variables.
+# - Changes in the sign of the regression coefficients which usually occur simultaneously with insignificant p-values. This suggests that the relationship between dependent variable and the particular independent variable is weak and changes direction over time.
+
+# In[47]:
+
+
+##using csv file from original client provided file with 134 kb:
+mod_data =pd. read_csv("C:/Users/KGhatak/Desktop/LGD_Model_Independent_REplication/LGD_Model_Data.csv")
+
+df_ci_sec=mod_data[mod_data['seg']=='COMM|C.I|SEC.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','ip_lag0', 'nh_sl_lag0']]
+df_cre_perm=mod_data[mod_data['seg']=='COMM|CRE|PERM.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','baa_spr_lag0', 'crepi_lag3']]
+df_res_lien1st=mod_data[mod_data['seg']=='CONS|HE.RES|1ST.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','dpi_lag0', 'hpi_lag3']]
+
+
+# In[49]:
+
+
+##Since all the models use fwd smoothed LGD :
+
+df_ci_sec=df_ci_sec[df_ci_sec['def_yyyyqq']<=201812]
+df_cre_perm=df_cre_perm[df_cre_perm['def_yyyyqq']<=201812]
+df_res_lien1st=df_res_lien1st[df_res_lien1st['def_yyyyqq']<=201812]
+
+
+# ### Fwd Stability Test : 
+
+# In[48]:
+
+
+
+def fwd_stability_test(df,date_column, x_columns, y_columns, hold_obs=10):
+    
+    
+
+    date = date_column.reset_index(drop=True) 
+#      rng1=pd.array(df['as_of_yyyymm'].iloc[0:(-hold_obs+1)])
+#     rng2=np.flip(rng1)
+
+    rng2 = pd.array(df['as_of_yyyymm'].iloc[hold_obs:]) # start + 10 * freq = 10 freq post start = 11th date = date[index = 10]
+
+
+    zf_params = pd.DataFrame(data=0, index = rng2, columns= x_columns.columns)
+    zf_pvalues = pd.DataFrame(data=0, index = rng2, columns= x_columns.columns)
+    
+
+    for i in rng2:
+        end_index = np.where(date_column.iloc[:] == i)[0][0]+1 #find where i is in the original date column
+        y = y_columns.iloc[0:end_index]
+        X = x_columns.iloc[0:end_index]
+        X = sm.add_constant(X)
+        model = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+        est = pd.DataFrame({ "Estimate": model.params, "StdErr": model.bse,
+                                    "tValue": model.tvalues, "Probt": model.pvalues})
+        est['Variable']=X.columns
+
+
+
+
+        for j in x_columns.columns:
+            zf_params.loc[i, j] = float(est.loc[est["Variable"].isin([j]), "Estimate"])
+            zf_pvalues.loc[i, j] = float(est.loc[est["Variable"].isin([j]), "Probt"])
+
+    for j in zf_params.columns:
+        fig, ax1 = plt.subplots(figsize=(20, 10))
+        ax2 = ax1.twinx()
+        
+        x = np.arange(len(df['as_of_yyyymm'].iloc[hold_obs:]))
+        x_ticks = df['as_of_yyyymm'].iloc[hold_obs:].unique().tolist()
+        x_ticks = x_ticks[0::1]
+        plt.xticks(np.arange(0, len(x_ticks), 1), x_ticks, rotation = 45, fontsize = 15)
+        
+        
+        lns1 = ax1.plot(x,zf_params[j], '-', color='cornflowerblue', marker='d', markersize=5,
+                        fillstyle='none', label = j)
+        
+        ax1.axhline(y=0, color='g', ls='dashed')
+            
+        lns2 = ax2.plot(x,zf_pvalues[j], '-', color='r', marker='o', markersize=5,
+                        fillstyle='none',
+                        label='p-value')
+
+        ax2.axhline(y=.05, color='k', ls='dashed')
+
+        ax1.set_ylabel(j,color='cornflowerblue', fontsize=20)
+        ax2.set_ylabel('p-value', color='r', fontsize=20)
+        ax2.set_ylim([0, 1])
+
+        ax1.set_xlabel('Date', fontsize=20, color='black')
+        
+        ax1.grid(False)
+        ax2.grid(False)
+
+        # added these three lines
+        lns = lns1 + lns2
+        labs = [l.get_label() for l in lns]
+        ax1.legend(lns, labs, loc='best')
+        
+
+        ax1.tick_params(axis='x', labelsize = 15, labelrotation = 90)
+
+
+        fig.autofmt_xdate()
+
+       
+        plt.title('Forward Stability Test: ' + j,fontsize=20)
+        
+#         return zf_params
+
+        # plt.savefig(path + "/fwd_stability_test_"+j+".png")
+        # plt.show()
+
+
+# In[49]:
+
+
+fwd_stability_test(df_ci_sec,df_ci_sec['as_of_yyyymm'], df_ci_sec[['ip_lag0', 'nh_sl_lag0']], df_ci_sec['lgd_wavg_smth_fwd'], hold_obs=10)
+
+
+# In[50]:
+
+
+fwd_stability_test(df_cre_perm,df_cre_perm['as_of_yyyymm'], df_cre_perm[['baa_spr_lag0', 'crepi_lag3']], df_cre_perm['lgd_wavg_smth_fwd'], hold_obs=10)
+
+
+# In[51]:
+
+
+fwd_stability_test(df_res_lien1st,df_res_lien1st['as_of_yyyymm'], df_res_lien1st[['dpi_lag0', 'hpi_lag3']], df_res_lien1st['lgd_wavg_smth_fwd'], hold_obs=10)
+
+
+# ## Bcakward stability testing : 
+
+# In[52]:
+
+
+def bkwd_stability_test(df,date_column, x_columns, y_columns, hold_obs=10):
+
+    date = date_column.reset_index(drop=True) 
+    rng1=pd.array(df['as_of_yyyymm'].iloc[0:(-hold_obs+1)])
+    rng2=np.flip(rng1)
+
+
+    zf_params = pd.DataFrame(data=0, index = rng2, columns= x_columns.columns)
+    zf_pvalues = pd.DataFrame(data=0, index = rng2, columns= x_columns.columns)
+
+    for i in rng2:
+        
+        start_index = np.where(date_column.iloc[:] == i)[0][0]
+        y = y_columns.iloc[start_index:]
+        X = x_columns.iloc[start_index:]
+        X = sm.add_constant(X)
+        model = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+        est = pd.DataFrame({ "Estimate": model.params, "StdErr": model.bse,
+                                    "tValue": model.tvalues, "Probt": model.pvalues})
+        est['Variable']=X.columns
+
+        for j in x_columns.columns:
+            zf_params.loc[i, j] = float(est.loc[est["Variable"].isin([j]), "Estimate"])
+            zf_pvalues.loc[i, j] = float(est.loc[est["Variable"].isin([j]), "Probt"])
+            
+
+    for j in zf_params.columns:
+        fig, ax1 = plt.subplots(figsize=(20, 10))
+        ax2 = ax1.twinx()
+
+        x = np.arange(len(rng2))
+        x_ticks = df['as_of_yyyymm'].iloc[0:(-hold_obs+1)].unique().tolist()
+        x_ticks.reverse()
+        x_ticks = x_ticks[0::1]
+        
+        plt.xticks(np.arange(0, len(x_ticks), 1), x_ticks, rotation = 45, fontsize = 15)
+        
+        
+        lns1 = ax1.plot(x,zf_params[j], '-', color='cornflowerblue', marker='d', markersize=5,
+                        fillstyle='none', label = j)
+        
+        ax1.axhline(y=0, color='g', ls='dashed')
+        
+        
+        lns2 = ax2.plot(x,zf_pvalues[j], '-', color='r', marker='o', markersize=5,
+                        fillstyle='none',
+                        label='p-value')
+
+        ax2.axhline(y=.05, color='k', ls='dashed')
+
+        ax1.set_ylabel(j,color='cornflowerblue', fontsize=20)
+        ax2.set_ylabel('p-value', color='r', fontsize=20)
+        ax2.set_ylim([0, 1])
+
+        ax1.set_xlabel('Date', fontsize=20, color='black')
+        
+        ax1.grid(False)
+        ax2.grid(False)
+
+        # added these three lines
+        lns = lns1 + lns2
+        labs = [l.get_label() for l in lns]
+        ax1.legend(lns, labs, loc='best')
+        ax1.tick_params(axis='x', labelsize = 15, labelrotation = 90)
+        
+        fig.autofmt_xdate()
+
+        plt.title('Backward Stability Test: ' + j,fontsize=20)
+        # plt.show()
+        
+#         return zf_params,est
+
+
+# In[53]:
+
+
+bkwd_stability_test(df_ci_sec,df_ci_sec['as_of_yyyymm'], df_ci_sec[['ip_lag0', 'nh_sl_lag0']], df_ci_sec['lgd_wavg_smth_fwd'], hold_obs=10)
+
+
+# In[54]:
+
+
+bkwd_stability_test(df_cre_perm,df_cre_perm['as_of_yyyymm'], df_cre_perm[['baa_spr_lag0', 'crepi_lag3']], df_cre_perm['lgd_wavg_smth_fwd'], hold_obs=10)
+
+
+# In[55]:
+
+
+bkwd_stability_test(df_res_lien1st,df_res_lien1st['as_of_yyyymm'], df_res_lien1st[['dpi_lag0', 'hpi_lag3']], df_res_lien1st['lgd_wavg_smth_fwd'], hold_obs=10)
+
+
+# In[ ]:
+
+
+
+
+
+# ## Section 4 : Scenario Testing 
+
+# In[129]:
+
+
+
+def mev_source (dt):
+
+    mev_mapping = {
+                    'Mnemonic': 'as_of_yyyymm',
+                    'FGDP$.IUSA': 'gdp_r_bf',
+                    'FGDP$_CF.IUSA': 'gdp_r_cf',
+                    'FGDP$_S0.IUSA': 'gdp_r_s0',
+                    'FGDP$_S1.IUSA': 'gdp_r_s1',
+                    'FGDP$_S2.IUSA': 'gdp_r_s2',
+                    'FGDP$_S3.IUSA': 'gdp_r_s3',
+                    'FGDP$_S4.IUSA': 'gdp_r_s4',
+                    'FGDP.IUSA': 'gdp_n_bf',
+                    'FGDP_CF.IUSA': 'gdp_n_cf',
+                    'FGDP_S0.IUSA': 'gdp_n_s0',
+                    'FGDP_S1.IUSA': 'gdp_n_s1',
+                    'FGDP_S2.IUSA': 'gdp_n_s2',
+                    'FGDP_S3.IUSA': 'gdp_n_s3',
+                    'FGDP_S4.IUSA': 'gdp_n_s4',
+                    'FLBR.IUSA': 'ur_bf',
+                    'FLBR_CF.IUSA': 'ur_cf',
+                    'FLBR_S0.IUSA': 'ur_s0',
+                    'FLBR_S1.IUSA': 'ur_s1',
+                    'FLBR_S2.IUSA': 'ur_s2',
+                    'FLBR_S3.IUSA': 'ur_s3',
+                    'FLBR_S4.IUSA': 'ur_s4',
+                    'FRBAAC.IUSA': 'baa_bf',
+                    'FRBAAC_CF.IUSA': 'baa_cf',
+                    'FRBAAC_S0.IUSA': 'baa_s0',
+                    'FRBAAC_S1.IUSA': 'baa_s1',
+                    'FRBAAC_S2.IUSA': 'baa_s2',
+                    'FRBAAC_S3.IUSA': 'baa_s3',
+                    'FRBAAC_S4.IUSA': 'baa_s4',
+                    'FRGT10Y.IUSA': 'tsry_10yr_bf',
+                    'FRGT10Y_CF.IUSA': 'tsry_10yr_cf',
+                    'FRGT10Y_S0.IUSA': 'tsry_10yr_s0',
+                    'FRGT10Y_S1.IUSA': 'tsry_10yr_s1',
+                    'FRGT10Y_S2.IUSA': 'tsry_10yr_s2',
+                    'FRGT10Y_S3.IUSA': 'tsry_10yr_s3',
+                    'FRGT10Y_S4.IUSA': 'tsry_10yr_s4',
+                    'FCBOEVIXQ.IUSA': 'vix_bf',
+                    'FCBOEVIXQ_CF.IUSA': 'vix_cf',
+                    'FCBOEVIXQ_S0.IUSA': 'vix_s0',
+                    'FCBOEVIXQ_S1.IUSA': 'vix_s1',
+                    'FCBOEVIXQ_S2.IUSA': 'vix_s2',
+                    'FCBOEVIXQ_S3.IUSA': 'vix_s3',
+                    'FCBOEVIXQ_S4.IUSA': 'vix_s4',
+                    'FYPDPIQ.IUSA': 'dpi_bf',
+                    'FYPDPIQ_CF.IUSA': 'dpi_cf',
+                    'FYPDPIQ_S0.IUSA': 'dpi_s0',
+                    'FYPDPIQ_S1.IUSA': 'dpi_s1',
+                    'FYPDPIQ_S2.IUSA': 'dpi_s2',
+                    'FYPDPIQ_S3.IUSA': 'dpi_s3',
+                    'FYPDPIQ_S4.IUSA': 'dpi_s4',
+                    'FCREPIQ.IUSA': 'crepi_bf',
+                    'FCREPIQ_CF.IUSA': 'crepi_cf',
+                    'FCREPIQ_S0.IUSA': 'crepi_s0',
+                    'FCREPIQ_S1.IUSA': 'crepi_s1',
+                    'FCREPIQ_S2.IUSA': 'crepi_s2',
+                    'FCREPIQ_S3.IUSA': 'crepi_s3',
+                    'FCREPIQ_S4.IUSA': 'crepi_s4',
+                    'FRFHLMCFM.IUSA': 'mtg_rt_bf',
+                    'FRFHLMCFM_CF.IUSA': 'mtg_rt_cf',
+                    'FRFHLMCFM_S0.IUSA': 'mtg_rt_s0',
+                    'FRFHLMCFM_S1.IUSA': 'mtg_rt_s1',
+                    'FRFHLMCFM_S2.IUSA': 'mtg_rt_s2',
+                    'FRFHLMCFM_S3.IUSA': 'mtg_rt_s3',
+                    'FRFHLMCFM_S4.IUSA': 'mtg_rt_s4',
+                    'FHST.IUSA': 'hs_st_bf',
+                    'FHST_CF.IUSA': 'hs_st_cf',
+                    'FHST_S0.IUSA': 'hs_st_s0',
+                    'FHST_S1.IUSA': 'hs_st_s1',
+                    'FHST_S2.IUSA': 'hs_st_s2',
+                    'FHST_S3.IUSA': 'hs_st_s3',
+                    'FHST_S4.IUSA': 'hs_st_s4',
+                    'FHOFHOPIQ.IUSA': 'hpi_bf',
+                    'FHOFHOPIQ_CF.IUSA': 'hpi_cf',
+                    'FHOFHOPIQ_S0.IUSA': 'hpi_s0',
+                    'FHOFHOPIQ_S1.IUSA': 'hpi_s1',
+                    'FHOFHOPIQ_S2.IUSA': 'hpi_s2',
+                    'FHOFHOPIQ_S3.IUSA': 'hpi_s3',
+                    'FHOFHOPIQ_S4.IUSA': 'hpi_s4',
+                    'FSP500Q.IUSA': 'snp_bf',
+                    'FSP500Q_CF.IUSA': 'snp_cf',
+                    'FSP500Q_S0.IUSA': 'snp_s0',
+                    'FSP500Q_S1.IUSA': 'snp_s1',
+                    'FSP500Q_S2.IUSA': 'snp_s2',
+                    'FSP500Q_S3.IUSA': 'snp_s3',
+                    'FSP500Q_S4.IUSA': 'snp_s4',
+                    'FIP.IUSA': 'ip_bf',
+                    'FIP_CF.IUSA': 'ip_cf',
+                    'FIP_S0.IUSA': 'ip_s0',
+                    'FIP_S1.IUSA': 'ip_s1',
+                    'FIP_S2.IUSA': 'ip_s2',
+                    'FIP_S3.IUSA': 'ip_s3',
+                    'FIP_S4.IUSA': 'ip_s4',
+                    'FHN1.IUSA': 'nh_sl_bf',
+                    'FHN1_CF.IUSA': 'nh_sl_cf',
+                    'FHN1_S0.IUSA': 'nh_sl_s0',
+                    'FHN1_S1.IUSA': 'nh_sl_s1',
+                    'FHN1_S2.IUSA': 'nh_sl_s2',
+                    'FHN1_S3.IUSA': 'nh_sl_s3',
+                    'FHN1_S4.IUSA': 'nh_sl_s4',
+                    'FSDEBT.IUSA': 'dsr_bf',
+                    'FSDEBT_CF.IUSA': 'dsr_cf',
+                    'FSDEBT_S0.IUSA': 'dsr_s0',
+                    'FSDEBT_S1.IUSA': 'dsr_s1',
+                    'FSDEBT_S2.IUSA': 'dsr_s2',
+                    'FSDEBT_S3.IUSA': 'dsr_s3',
+                    'FSDEBT_S4.IUSA': 'dsr_s4',
+                    'FCPWTI.IUSA': 'wti_bf',
+                    'FCPWTI_CF.IUSA': 'wti_cf',
+                    'FCPWTI_S0.IUSA': 'wti_s0',
+                    'FCPWTI_S1.IUSA': 'wti_s1',
+                    'FCPWTI_S2.IUSA': 'wti_s2',
+                    'FCPWTI_S3.IUSA': 'wti_s3',
+                    'FCPWTI_S4.IUSA': 'wti_s4',
+                    'FIPMF.IUSA': 'ip_mf_bf',
+                    'FIPMF_CF.IUSA': 'ip_mf_cf',
+                    'FIPMF_S0.IUSA': 'ip_mf_s0',
+                    'FIPMF_S1.IUSA': 'ip_mf_s1',
+                    'FIPMF_S2.IUSA': 'ip_mf_s2',
+                    'FIPMF_S3.IUSA': 'ip_mf_s3',
+                    'FIPMF_S4.IUSA': 'ip_mf_s4',
+                    'FIPMI.IUSA': 'ip_mi_bf',
+                    'FIPMI_CF.IUSA': 'ip_mi_cf',
+                    'FIPMI_S0.IUSA': 'ip_mi_s0',
+                    'FIPMI_S1.IUSA': 'ip_mi_s1',
+                    'FIPMI_S2.IUSA': 'ip_mi_s2',
+                    'FIPMI_S3.IUSA': 'ip_mi_s3',
+                    'FIPMI_S4.IUSA': 'ip_mi_s4'
+                  }
+    
+    ACC_KEY = '381BE94D-97A2-4C0F-B793-B09F03691B36'
+    ENC_KEY = '714C33D0-A419-4564-98FB-C6067A6C09D5'
+    BASKET_NAME = 'CECL-' + str(dt)
+    
+    mev = fd.mev_src(ACC_KEY, ENC_KEY, BASKET_NAME)
+    
+    for i in range(len(mev.columns)): 
+        if i == 0:
+            mev.iloc[:, i] = mev.iloc[:, i].astype('datetime64')
+        else:
+            mev.iloc[:, i] = mev.iloc[:, i].astype('float64')
+        
+    mev.rename(columns = mev_mapping, inplace = True)
+    
+    mev['as_of_yyyymm'] = mev['as_of_yyyymm'].dt.year * 100 + mev['as_of_yyyymm'].dt.month
+    
+    '''
+    prepare the mev transformation
+    '''    
+    mev2 = mev.copy(deep = True)
+    
+    for i in ['bf', 'cf', 's0', 's1', 's2', 's3', 's4']:
+        
+        '''
+        calculate BaaSpread
+        '''
+        
+        mev2['baa_spr_'+i] = mev2['baa_'+i] - mev2['tsry_10yr_'+i]
+        mev2.drop(columns = ['baa_'+i, 'tsry_10yr_'+i], inplace = True)
+        
+        '''
+        mev transformation
+        '''
+        
+        # annualized growth rate
+        for col in ['gdp_r_'+i, 'gdp_n_'+i, 'ip_'+i, 'ip_mf_'+i, 'ip_mi_'+i]:
+            mev2[col] = (mev2[col] / mev2[col].shift(3))**4 - 1
+            
+        # quarter over quarter growth
+        mev2['snp_'+i] = mev2['snp_'+i] / mev2['snp_'+i].shift(3) - 1
+        
+        # year over year growth
+        for col in ['dpi_'+i, 'crepi_'+i, 'hs_st_'+i, 'hpi_'+i, 'nh_sl_'+i]:
+            mev2[col] = mev2[col] / mev2[col].shift(12) - 1
+            
+        # first difference
+        mev2['mtg_rt_'+i] = mev2['mtg_rt_'+i] - mev2['mtg_rt_'+i].shift(1)
+        
+        # month over month growth
+        mev2['wti_'+i] = mev2['wti_'+i] / mev2['wti_'+i].shift(1) - 1
+    
+    return mev2
+
+
+# In[130]:
+
+
+#%% Source and prepare MEV
+
+mev_202112 = mev_source(202112)
+mev_201912 = mev_source(201912)
+
+
+# In[131]:
+
+
+
+'''
+prepare MEV forecast: 2021
+'''
+mev_2021 = {}
+
+for s in ['cf', 'bf', 's3', 's4']:
+    tmp = mev_202112[['as_of_yyyymm'] + [i for i in mev_202112.columns if i[-2:] == s]]
+    
+    for i in tmp.columns:
+        for l in [0, 3, 6, 9]:
+            if i != 'as_of_yyyymm':
+                tmp[i[:-2]+'lag'+str(l)] = tmp[i].shift(l) 
+                
+        if i != 'as_of_yyyymm':
+            tmp.drop(columns = i, inplace = True)
+    
+    if s == 'cf':
+        mev_avg = tmp[(tmp.as_of_yyyymm >= 200101) & (tmp.as_of_yyyymm <= 202112)].copy()
+            
+    tmp = tmp[(tmp.as_of_yyyymm > 202112) & (tmp.as_of_yyyymm <= 202412)]
+    
+    mev_2021[s] = tmp
+    
+    
+'''
+prepare MEV forecast: 2019
+'''
+mev_2019 = {}
+
+for s in ['cf', 'bf', 's3', 's4']:
+    tmp = mev_201912[['as_of_yyyymm'] + [i for i in mev_201912.columns if i[-2:] == s]]
+    
+    for i in tmp.columns:
+        for l in [0, 3, 6, 9]:
+            if i != 'as_of_yyyymm':
+                tmp[i[:-2]+'lag'+str(l)] = tmp[i].shift(l) 
+                
+        if i != 'as_of_yyyymm':
+            tmp.drop(columns = i, inplace = True)
+            
+    tmp = tmp[(tmp.as_of_yyyymm > 201912) & (tmp.as_of_yyyymm <= 202212)]
+    
+    mev_2019[s] = tmp
+
+
+# In[141]:
+
+
+type(mev_2019)
+
+
+# In[136]:
+
+
+mev_201912
+
+
+# In[151]:
+
+
+#%% LGD model development data
+
+# mod_data = pd.read_pickle(config['historical_data'] + 'LGD_Model_Data.pkl')
+
+##using csv file from original client provided file with 134 kb:
+mod_data =pd. read_csv("C:/Users/KGhatak/Desktop/LGD_Model_Independent_REplication/LGD_Model_Data.csv")
+
+
+df_ci_sec=mod_data[mod_data['seg']=='COMM|C.I|SEC.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','ip_lag0', 'nh_sl_lag0']]
+df_cre_perm=mod_data[mod_data['seg']=='COMM|CRE|PERM.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','baa_spr_lag0', 'crepi_lag3']]
+df_res_lien1st=mod_data[mod_data['seg']=='CONS|HE.RES|1ST.'] [['as_of_yyyymm','def_yyyyqq','lgd_wavg_smth_fwd','dpi_lag0', 'hpi_lag3']]
+
+
+# In[117]:
+
+
+## This block of code develops the model wise back testing results and stack one below the other in the form of a data frame:
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+mev_df_list=[mev_2019,mev_2021]
+mev_df_name=['mev_2019','mev_2021']
+
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+oot_is_bt_df=pd.DataFrame()
+tem=pd.DataFrame()
+tmp2=pd.DataFrame()
+mev=pd.DataFrame()
+scenario_summary1=pd.DataFrame()
+scenario_summary_final=pd.DataFrame()
+scenario_df=pd.DataFrame()
+
+
+
+for i in range(len(df_list)):
+    
+    model_data=df_list[i]
+    
+    dep_var='lgd_wavg_smth_fwd'
+    
+    if dep_var == 'lgd_wavg_smth_fwd':
+        model_data = model_data[model_data['def_yyyyqq'] <= 201812]
+    
+    ##Fit the final model
+    y = model_data.iloc[:,2].values
+    X = model_data.iloc[:,3:5].values
+    X = sm.add_constant(X)
+    
+    fit = GLM(y, X, family=families.Binomial()).fit(cov_type='HC0')
+    
+    y_pred_full = np.reshape(fit.predict(X), (-1, 1))
+    
+     ##Insample new model :
+    y_is = model_data.iloc[:-8, 2].values 
+    X_is = model_data.iloc[:-8, 3:5].values
+    X_is = sm.add_constant(X_is)
+    
+    fit_is = GLM(y_is, X_is, family=families.Binomial()).fit(cov_type='HC0')
+    
+    y_pred_is = np.reshape(fit.predict(X_is), (-1, 1))
+    
+    ##Outsample Prediction :
+    y_os = model_data.iloc[-8:, 2].values 
+    X_os = model_data.iloc[-8:, 3:5].values
+    X_os = sm.add_constant(X_os)
+           
+    y_pred_os = np.reshape(fit_is.predict(X_os), (-1, 1))
+    
+    bt_df = model_data[['as_of_yyyymm','def_yyyyqq', dep_var]].copy()
+#     bt_df['model_name'] = seg_name[i]
+    bt_df['pred_full'] = list(y_pred_full.reshape(-1,))
+    bt_df['pred_is'] = list(y_pred_is.reshape(-1,))+[np.nan]*8
+    bt_df['pred_os'] = [np.nan]*(len(bt_df) - 8) + list(y_pred_os.reshape(-1,))
+    
+   
+    
+
+    '''
+    Forecast under different scenarios
+    '''
+
+    pred = {}
+
+    for m in range(len(mev_df_list)):
+
+        mev=mev_df_list[m].copy()
+
+        for s in ['s4', 's3', 'bf', 'cf', 'hist']:
+
+
+            if s == 'hist':
+                '''
+                calculate the maximum of rolling 12 month average LGD of the historical data for sensitivity testing
+                '''
+                pred[s] = model_data[dep_var].rolling(window = 4).mean().max()
+            else:
+
+                '''
+                calculate the maximum of rolling 12 month average LGD of different scenarios for sensitivity testing
+                '''
+                X = mev[s][model_data.iloc[:,3:5].columns.tolist()].values
+                X = sm.add_constant(X)
+
+                lgd = pd.DataFrame(np.array(fit.predict(X)).reshape(-1,1), columns = [dep_var])
+                pred[s] = lgd[dep_var].rolling(window = 4).mean().max()
+                
+
+                
+
+                '''
+                append the forecasting under different scenarios to the backtesting dataset
+                '''
+
+                tmp = mev['cf'][['as_of_yyyymm']].copy()
+                tmp['frct_'+s] = list(np.array(fit.predict(X)))
+#                 tmp['mev_scenario']=mev_df_name[m]
+
+                if s == 's4':
+                    tmp2 = tmp.copy()
+                else:
+                    tmp2 = pd.merge(tmp2, tmp, on = 'as_of_yyyymm', how = 'inner')
+
+                tmp2['mev_scenario']=mev_df_name[m]
+                
+            scenario_df=pd.DataFrame.from_dict(pred,orient ='index').transpose()
+            scenario_df['MEV_Period']=mev_df_name[m]
+            scenario_df['Model_name']=seg_name[i]
+        
+        scenario_summary1=pd.concat([scenario_summary1, scenario_df], axis = 0)
+
+        bt_df = pd.concat([bt_df, tmp2], axis = 0)
+        bt_df['model_name'] = seg_name[i]
+        
+        
+
+
+    oot_is_bt_df = pd.concat([oot_is_bt_df, bt_df], axis = 0)
+#     scenario_summary_final=pd.concat([scenario_summary_final,scenario_summary1], axis = 0)
+
+#     if i==0 and j==1:
+#         bt_fc_df = bt_fc.copy()
+#     else:
+#         bt_fc_df = pd.concat([bt_fc_df, bt_fc], axis = 0)
+               
+                
+
+
+# In[150]:
+
+
+tmp = mev_2019['s4'].copy().columns.tolist()
+tmp
+
+
+# In[ ]:
+
+
+df = mev[s][model_data.iloc[:,3:5].columns.tolist()]
+
+
+# In[153]:
+
+
+df = mev_2019['s3'][['baa_spr_lag0', 'crepi_lag3']]
+df
+
+
+# In[152]:
+
+
+model_data=df_cre_perm.copy()
+model_data.iloc[:,3:5].columns.tolist()
+
+
+# In[66]:
+
+
+scenario_df=pd.DataFrame.from_dict(pred,orient ='index').transpose()
+scenario_df['model']=
+
+
+# In[35]:
+
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+mev_df_name=['mev_2021']
+
+
+
+for i in range(len(seg_name)):
+    
+    for m in range(len(mev_df_name)):
+
+        plt_data1=oot_is_bt_df[(oot_is_bt_df['model_name']==seg_name[i])]
+        plt_data2=plt_data1[plt_data1['mev_scenario'].isnull()]
+        plt_data3=plt_data1[(plt_data1['mev_scenario']==mev_df_name[m])]
+        plt_data = pd.concat([plt_data2, plt_data3], axis = 0)
+                            
+
+        x_ticks = plt_data['as_of_yyyymm'].unique().tolist()
+        x_ticks = x_ticks[0::1]
+
+        x = np.arange(len(plt_data))
+
+        y1 = plt_data['lgd_wavg_smth_fwd']
+        y2 = plt_data['pred_full']
+        y3 = plt_data['pred_os']
+        y4 = plt_data['frct_s4']
+        y5 = plt_data['frct_s3']
+        y6 = plt_data['frct_bf']
+        y7 = plt_data['frct_cf']
+
+        plt.figure(figsize = (25,10))
+
+        plt.xticks(np.arange(0, len(plt_data), 1), x_ticks, rotation = 90, fontsize = 15)
+        plt.yticks(fontsize=15)
+        plt.xticks()
+        plt.plot(x, y1, label = 'Act')
+        plt.plot(x, y2, label = 'Pred')
+        plt.plot(x, y3, label = 'Pred_os')
+        plt.plot(x, y4, label = 's4')
+        plt.plot(x, y5, label = 's3')
+        plt.plot(x, y6, label = 'bf')
+        plt.plot(x, y7, label = 'cf')
+
+        plt.legend(loc = 'best',fontsize=15)
+        plt.title("BT & Scenario Plots for : "+ seg_name[i] +" for scenarios "+mev_df_name[m] ,fontsize=25)
+    
+
+
+# In[123]:
+
+
+## Scenario analysis for the independent drivers : 
+
+
+df_list=[df_ci_sec,df_cre_perm,df_res_lien1st]
+mev_df_list=[mev_2019]
+mev_df_name=['mev_2019']
+
+seg_name=['COMM|C.I|SEC.','COMM|CRE|PERM.','CONS|HE.RES|1ST.']
+
+oot_is_bt_df=pd.DataFrame()
+tem=pd.DataFrame()
+tmp2=pd.DataFrame()
+mev=pd.DataFrame()
+
+
+
+for i in range(len(df_list)):
+    
+    model_data=df_list[i]
+    
+    dep_var='lgd_wavg_smth_fwd'
+    
+    if dep_var == 'lgd_wavg_smth_fwd':
+        model_data = model_data[model_data['def_yyyyqq'] <= 201812]
+
+    
+    ##Fit the final model
+    y_train = model_data.iloc[:,2].values
+    X_train = model_data.iloc[:,3:5].values
+    X_train = sm.add_constant(X_train)
+    
+    fit = GLM(y_train, X_train, family=families.Binomial()).fit(cov_type='HC0')
+    
+
+  
+
+
+    pred = {}
+
+    for m in range(len(mev_df_list)):
+
+        mev=mev_df_list[m].copy()
+
+        for s in ['s4', 's3', 'bf', 'cf']:
+            
+                '''
+                    append the forecasting under different scenarios to the backtesting dataset
+                    
+                '''
+                X = mev[s][model_data.iloc[:,3:5].columns.tolist()].values
+                X = sm.add_constant(X)
+
+
+
+
+                df = mev[s][model_data.iloc[:,3:5].columns.tolist()]
+                df['as_of_yyyymm']=mev[s]['as_of_yyyymm']
+                df['Scenario'] = s
+                df['pred_lgd'] = list(np.array(fit.predict(X)))
+                
+
+                
+                
+                x_ticks = df['as_of_yyyymm'].unique().tolist()
+                x_ticks = x_ticks[0::1]
+
+                x = np.arange(len(df))
+
+                y1 = df.iloc[:,0]
+                y2 = df.iloc[:,1]
+                y3 = df.iloc[:,4]
+
+
+                plt.figure(figsize = (25,10))
+
+                plt.xticks(np.arange(0, len(df), 1), x_ticks, rotation = 90, fontsize = 15)
+                plt.yticks(fontsize=15)
+                plt.xticks()
+                plt.plot(x, y1, label = str(df.columns[0]))
+                plt.plot(x, y2, label = str(df.columns[1]))
+                plt.plot(x, y3, label = str(df.columns[4]))
+  
+
+                plt.legend(loc = 'best',fontsize=15)
+                plt.title("Driver Scenario Plots for : "+ seg_name[i] +" for mev data "+mev_df_name[m]+" & scenario:"+s ,fontsize=25)
+
+
+
+# In[ ]:
+
+
+
+
